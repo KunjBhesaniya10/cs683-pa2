@@ -1,0 +1,169 @@
+/*
+  for dynamic policy
+    - there are 32 leader set selected uniformly across the L2 cache out of 1024 sets
+    - for the formula (instr accesses + instr misses)/(total accesses + total misses) > T
+        - let I = instr accesses + instr misses and D = data accesses + data misses
+        - then the formula is same as (1-T)*I - T*D > 0, so we use the counter instead of the ratio
+        - with T = THRESHOLD_NUM/THRESHOLD_DEN, on every leader set access
+            - instruction access increases the counter by events*(THRESHOLD_DEN - THRESHOLD_NUM)
+            - data access decreases the counter by events*THRESHOLD_NUM
+            - events is 1 for a hit and 2 for a miss (miss is counted in both access and miss)
+        - the counter saturates at 0 and 2^PSEL_BITS - 1
+        - upper half of the counter uses I-RRIP for the follower sets, lower half uses RRIP
+*/
+
+
+
+#include "cache.h"
+
+#define maxRRPV 3
+#define RRIP_INSERT_RRPV (maxRRPV - 1)
+#define INSTR_INSERT_RRPV 1
+#define DATA_INSERT_RRPV (maxRRPV - 1)
+#define INSTR_HIT_RRPV 0
+
+#ifndef LEADER_SETS
+#define LEADER_SETS 32
+#endif
+#define REGION_SIZE (L2C_SET / LEADER_SETS)
+
+// threshold T = THRESHOLD_NUM / THRESHOLD_DEN on (instr accesses + instr misses) / (total accesses + total misses)
+#ifndef THRESHOLD_NUM
+#define THRESHOLD_NUM 9
+#endif
+#ifndef THRESHOLD_DEN
+#define THRESHOLD_DEN 20
+#endif
+#define INSTR_STEP (THRESHOLD_DEN - THRESHOLD_NUM)
+#define DATA_STEP THRESHOLD_NUM
+
+#ifndef PSEL_BITS
+#define PSEL_BITS 10
+#endif
+#define PSEL_MAX ((1 << PSEL_BITS) - 1) //upper saturation
+#define PSEL_MID (1 << (PSEL_BITS - 1))
+
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+
+// saturating policy selector: upper half selects I-RRIP for the follower sets
+int32_t psel;
+
+// leader-set statistics after warmup 
+uint64_t stat_instr_events;   // instr accesses + instr misses
+uint64_t stat_total_events;   // total accesses + total misses
+uint64_t stat_samples;        // leader accesses
+uint64_t stat_irrip_samples;  // leader accesses that left the followers in I-RRIP mode
+uint64_t stat_switches;       // changes of the follower mode
+
+// one leader per region of REGION_SIZE sets, offset along the diagonal
+static bool is_leader(uint32_t set)
+{
+    return (set % REGION_SIZE) == ((set / REGION_SIZE) % REGION_SIZE);
+}
+
+static bool irrip_mode()
+{
+    return psel >= PSEL_MID;
+}
+
+static bool irrip_set(uint32_t set)
+{
+    return irrip_mode() && !is_leader(set);
+}
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize Dynamic I-RRIP state for L2C" << endl;
+
+    for (int i=0; i<L2C_SET; i++) {
+        for (int j=0; j<L2C_WAY; j++) {
+            l2_rrpv[i][j] = maxRRPV;
+        }
+    }
+    psel = PSEL_MID - 1;
+}
+
+// find replacement victim
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    bool prefer_data = irrip_set(set);
+
+    while (1)
+    {
+        int instr_victim = -1;
+        for (int i=0; i<L2C_WAY; i++) {
+            if (l2_rrpv[set][i] != maxRRPV)
+                continue;
+            if (!prefer_data || !current_set[i].instruction)
+                return i;
+            if (instr_victim < 0)
+                instr_victim = i;
+        }
+        if (instr_victim >= 0)
+            return instr_victim;
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+// leader sets: access -> events++ and access + miss -> events+=2; instruction events raise PSEL, data events lower it
+static void sample_leader(uint32_t cpu, uint8_t hit, uint8_t isInstruction)
+{
+    bool was_irrip = irrip_mode();
+    int32_t events = hit ? 1 : 2;
+
+    if (isInstruction)
+        psel = min(psel + events * INSTR_STEP, PSEL_MAX);
+    else
+        psel = max(psel - events * DATA_STEP, 0);
+
+    if (warmup_complete[cpu]) {
+        stat_total_events += events;
+        stat_instr_events += isInstruction ? events : 0;
+        stat_samples++;
+        stat_irrip_samples += irrip_mode();
+        stat_switches += was_irrip != irrip_mode();
+    }
+}
+
+// called on every cache hit and cache fill
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
+{
+    if ((type == WRITEBACK) && ip)
+        assert(0);
+
+    if (is_leader(set) && type != WRITEBACK)
+        sample_leader(cpu, hit, isInstruction);
+
+    if (irrip_set(set)) {
+        // data hits are not promoted
+        if (hit) {
+            if (isInstruction)
+                l2_rrpv[set][way] = INSTR_HIT_RRPV;
+        }
+        else
+            l2_rrpv[set][way] = isInstruction ? INSTR_INSERT_RRPV : DATA_INSERT_RRPV;
+    } else {
+        if (hit)
+            l2_rrpv[set][way] = 0;
+        else
+            l2_rrpv[set][way] = RRIP_INSERT_RRPV;
+    }
+}
+
+// leader score: (instr accesses + instr misses) / (total accesses + total misses) over the run
+// I-RRIP mode: share of leader accesses during which the followers ran I-RRIP
+void CACHE::l2c_replacement_final_stats()
+{
+    cout << "Dynamic I-RRIP: leader sets " << LEADER_SETS << ", threshold " << THRESHOLD_NUM << "/" << THRESHOLD_DEN
+         << ", PSEL bits " << PSEL_BITS << endl;
+    cout << "Leader score: " << (stat_total_events ? (double)stat_instr_events / stat_total_events : 0) << endl;
+    cout << "I-RRIP mode: " << (stat_samples ? 100.0 * stat_irrip_samples / stat_samples : 0) << "% of leader accesses, "
+         << stat_switches << " switches" << endl;
+}
