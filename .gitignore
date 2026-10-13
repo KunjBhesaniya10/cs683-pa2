@@ -1,5 +1,5 @@
 # trace files (not part of the submission)
-Trace*
+/Trace*
 *.champsimtrace.gz
 *.champsimtrace.xz
 
