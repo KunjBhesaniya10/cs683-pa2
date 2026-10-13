@@ -1,0 +1,10 @@
+trace,config,ipc,speedup,l1d_load_mpki,accuracy_pct,coverage_pct
+trace1,baseline,0.232246,1.0000,10.6788,,
+trace1,ipstride,0.233327,1.0047,10.1177,52.97,5.25
+trace1,spp,0.234146,1.0082,9.4218,46.16,11.77
+trace2,baseline,0.251304,1.0000,13.5363,,
+trace2,ipstride,0.251179,0.9995,13.4385,38.00,0.72
+trace2,spp,0.255789,1.0178,12.8174,48.60,5.31
+trace3,baseline,0.381855,1.0000,3.4035,,
+trace3,ipstride,0.382712,1.0022,3.3186,15.95,2.49
+trace3,spp,0.390508,1.0227,2.7774,42.49,18.40
