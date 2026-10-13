@@ -1,0 +1,88 @@
+/*
+    I-RRIP Policy
+        1. Insertion - insert instruction line with RRPV=1, Data line with RRPV=2
+                     - to prioritize instruction lines, we can insert it with low RRIP value to give it more chance to get hit compare to data lines.
+                     - RRPV=1 is better than RRPV=0 from experiments hence keeping RRPV=1 for insertion.
+        2. Promotion - No promotion of Data Lines
+                     - data lines will have more chances of eviction by not promoting them on hit.
+                     - no promotion of data lines increase the data MPKI but, instruction MPKI and overall MPKI decreases from experimentation,
+        3. Eviction  - evict line with RRPV=3, with prioritizing Data line in case of tie.
+                     - in case of tie both data line and instruction line present, prioritizing data lines in eviction helps instruction lines.
+
+*/
+
+
+#include "cache.h"
+
+#define maxRRPV 3
+#ifndef INSTR_INSERT_RRPV
+#define INSTR_INSERT_RRPV 1
+#endif
+#define DATA_INSERT_RRPV (maxRRPV - 1)
+#define INSTR_HIT_RRPV 0
+// DATA_HIT_RRPV: data hits are promoted only when it is defined
+
+uint32_t l2_rrpv[L2C_SET][L2C_WAY];
+
+// initialize replacement state
+void CACHE::l2c_initialize_replacement()
+{
+    cout << "Initialize I-RRIP state for L2C" << endl;
+
+    for (int i=0; i<L2C_SET; i++) {
+        for (int j=0; j<L2C_WAY; j++) {
+            l2_rrpv[i][j] = maxRRPV;
+        }
+    }
+}
+
+// find replacement victim: among eviction lines, evict a data line before an instruction line
+uint32_t CACHE::l2c_find_victim(uint32_t cpu, uint64_t instr_id, uint32_t set, const BLOCK *current_set, uint64_t ip, uint64_t full_addr, uint32_t type)
+{
+    while (1)
+    {
+        int instr_victim = -1;
+        for (int i=0; i<L2C_WAY; i++) {
+            if (l2_rrpv[set][i] != maxRRPV)
+                continue;
+            if (!current_set[i].instruction)
+                return i;
+            if (instr_victim < 0)
+                instr_victim = i;
+        }
+        if (instr_victim >= 0)
+            return instr_victim;
+
+        for (int i=0; i<L2C_WAY; i++)
+            l2_rrpv[set][i]++;
+    }
+
+    // WE SHOULD NOT REACH HERE
+    assert(0);
+    return 0;
+}
+
+// called on every cache hit and cache fill
+void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t way, uint64_t full_addr, uint64_t ip, uint64_t victim_addr, uint32_t type, uint8_t hit, uint8_t isInstruction)
+{
+    if ((type == WRITEBACK) && ip)
+        assert(0);
+
+    if (hit) {
+        // for experimenting with no data line promotion and data line promotion.
+#ifdef DATA_HIT_RRPV       
+        l2_rrpv[set][way] = isInstruction ? INSTR_HIT_RRPV : DATA_HIT_RRPV;
+#else
+        if (isInstruction)
+            l2_rrpv[set][way] = INSTR_HIT_RRPV;
+#endif
+    }
+    else
+        l2_rrpv[set][way] = isInstruction ? INSTR_INSERT_RRPV : DATA_INSERT_RRPV;
+}
+
+// use this function to print out your own stats at the end of simulation
+void CACHE::l2c_replacement_final_stats()
+{
+
+}
