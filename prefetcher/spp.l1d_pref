@@ -1,24 +1,261 @@
+/*
+ Stride Pattern Prefetcher
+ 
+  IP table: one entry per load IP (with LRU).
+     - Each entry keeps the IP's last cache-line address, its last stride with a 2-bit confidence counter, and a
+  signature tracking its recent strides.
+ 
+  Uniform mode: when the same stride repeats (confidence >= UNIFORM_CONF_THRESHOLD),
+  it prefetches addr + k * stride for k = 1..degree.
+
+  Non-uniform mode: otherwise, it walks the signature map, a table shared by all IPs that
+  maps a stride signature to the next expected stride and its confidence.
+ 
+   The degree is adjusted between MIN_DEGREE and MAX_DEGREE from the prefetch accuracy measured every
+  EPOCH_FILLS prefetch fills.
+
+ */
+
 #include "cache.h"
 
+#define IP_TRACKER_COUNT 128            
+#define MASK_IP 0x3FF                   // IP tag: low 10 bits of the IP
 
-void CACHE::l1d_prefetcher_initialize() 
+// stride are bounded -63 to 63 (7 bits), as a page only have 64 cache line, 
+// the useful strides for prefetching can't be greater than 64 so we keep only 7 bit stride
+#define STRIDE_MIN -63              
+#define STRIDE_MAX 63
+#define STRIDE_MASK 0x7F
+#define CONF_MAX 3                      
+#ifndef UNIFORM_CONF_THRESHOLD
+#define UNIFORM_CONF_THRESHOLD 1        // IP confidence needed for uniform mode
+#endif
+#define SIG_CONF_THRESHOLD 1            // signature-map confidence needed to prefetch
+
+#define MIN_DEGREE 1
+#define EPOCH_FILLS 256                 // prefetch fills per accuracy measurement
+
+#ifndef SIG_BITS
+#define SIG_BITS 7                      // signature width;
+#endif
+#ifndef PREFETCH_DEGREE
+#define PREFETCH_DEGREE 3               // initial degree
+#endif
+#ifndef MAX_DEGREE
+#define MAX_DEGREE 4
+#endif
+#ifndef ACC_HIGH
+#define ACC_HIGH 0.60                   // accuracy above which the degree is increased
+#endif
+#ifndef ACC_LOW
+#define ACC_LOW 0.30                    // accuracy below which the degree is decreased
+#endif
+
+#define SIG_MASK ((1 << SIG_BITS) - 1)
+#define SIGMAP_SIZE (1 << SIG_BITS)
+
+class IP_TRACKER {
+  public:
+    uint64_t ip;                 // IP tag (10 bits)
+    uint64_t last_cl_addr;       // last cache-line address accessed by this IP
+    int64_t last_stride;         // last confirmed stride (7 bits)
+    uint8_t conf;                // confidence in last_stride (2 bits)
+    uint16_t current_signature;  // signature of recent strides (SIG_BITS bits)
+    uint32_t lru;                
+
+    IP_TRACKER () {
+        ip = 0;
+        last_cl_addr = 0;
+        last_stride = 0;
+        conf = 0;
+        current_signature = 0;
+        lru = 0;
+    };
+};
+
+// signature map entry: signature -> {next stride, confidence}
+class SIGMAP_ENTRY {
+  public:
+    int64_t stride;              // predicted next stride (7 bits)
+    uint8_t conf;                // confidence in stride (2 bits)
+
+    SIGMAP_ENTRY () {
+        stride = 0;
+        conf = 0;
+    };
+};
+
+IP_TRACKER trackers[IP_TRACKER_COUNT];
+SIGMAP_ENTRY sigmap[SIGMAP_SIZE];
+
+uint32_t cur_degree = PREFETCH_DEGREE;
+uint64_t epoch_fill_base = 0;
+uint64_t epoch_useful_base = 0;
+
+// older strides move left and drop out of the tracking window
+static uint16_t next_signature(uint16_t sig, int64_t stride)
+{
+    return ((sig << 1) ^ (stride & STRIDE_MASK)) & SIG_MASK;
+}
+
+static void update_lru(int index)
+{
+    for (int i = 0; i < IP_TRACKER_COUNT; i++) {
+        if (trackers[i].lru < trackers[index].lru)
+            trackers[i].lru++;
+    }
+    trackers[index].lru = 0;
+}
+
+void CACHE::l1d_prefetcher_initialize()
 {
     std::cout << "------------------------------------------------" << std::endl;
     std::cout << "        Stride Pattern Prefetcher (SPP)         " << std::endl;
     std::cout << "------------------------------------------------" << std::endl;
+
+    // unique LRU positions so exactly one entry is the LRU victim
+    for (int i = 0; i < IP_TRACKER_COUNT; i++)
+        trackers[i].lru = i;
+
+    cur_degree = PREFETCH_DEGREE;
 }
 
 void CACHE::l1d_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint8_t critical_ip_flag)
 {
-   
+    uint64_t cl_addr = addr >> LOG2_BLOCK_SIZE;
+    uint64_t ip_tag = ip & MASK_IP;
+
+    int index;
+    for (index = 0; index < IP_TRACKER_COUNT; index++) {
+        if (trackers[index].ip == ip_tag)
+            break;
+    }
+
+    // new IP: allocate the LRU tracker, nothing to predict yet
+    if (index == IP_TRACKER_COUNT) {
+        for (index = 0; index < IP_TRACKER_COUNT; index++) {
+            if (trackers[index].lru == (IP_TRACKER_COUNT - 1))
+                break;
+        }
+
+        trackers[index].ip = ip_tag;
+        trackers[index].last_cl_addr = cl_addr;
+        trackers[index].last_stride = 0;
+        trackers[index].conf = 0;
+        trackers[index].current_signature = 0;
+        update_lru(index);
+        return;
+    }
+
+    IP_TRACKER &t = trackers[index];
+    int64_t stride = (int64_t)cl_addr - (int64_t)t.last_cl_addr;
+
+    if (stride == 0) {
+        update_lru(index);
+        return;
+    }
+
+    // stride does not fit in 7 bits: restart training for this IP
+    if (stride < STRIDE_MIN || stride > STRIDE_MAX) {
+        t.last_cl_addr = cl_addr;
+        t.last_stride = 0;
+        t.conf = 0;
+        t.current_signature = 0;
+        update_lru(index);
+        return;
+    }
+
+    // uniform stride 
+    if (stride == t.last_stride) {
+        if (t.conf < CONF_MAX)
+            t.conf++;
+    } else {
+        if (t.conf > 0)
+            t.conf--;
+        else
+            t.last_stride = stride;
+    }
+
+    // signature map 
+    SIGMAP_ENTRY &e = sigmap[t.current_signature];
+    if (e.stride == stride) {
+        if (e.conf < CONF_MAX)
+            e.conf++;
+    } else {
+        if (e.conf > 0)
+            e.conf--;
+        else
+            e.stride = stride;
+    }
+    t.current_signature = next_signature(t.current_signature, stride);
+
+    t.last_cl_addr = cl_addr;
+    update_lru(index);
+
+    // fill into L1 only while the L1 MSHR is less than half full
+    int fill_level = (MSHR.occupancy < (MSHR.SIZE >> 1)) ? FILL_L1 : FILL_L2;
+
+    if (t.conf >= UNIFORM_CONF_THRESHOLD) {
+        // uniform mode
+        for (uint32_t i = 1; i <= cur_degree; i++) {
+            uint64_t pf_address = (cl_addr + t.last_stride * i) << LOG2_BLOCK_SIZE;
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+                break;
+            prefetch_line(ip, addr, pf_address, fill_level, 0);
+        }
+    } else {
+        // non-uniform mode. walk the signature map, predict the stride per step
+        uint16_t sig = t.current_signature;
+        uint64_t pf_cl_addr = cl_addr;
+        for (uint32_t i = 0; i < cur_degree; i++) {
+            SIGMAP_ENTRY &p = sigmap[sig];
+            if (p.stride == 0)
+                break;
+
+            pf_cl_addr += p.stride;
+            uint64_t pf_address = pf_cl_addr << LOG2_BLOCK_SIZE;
+            if ((pf_address >> LOG2_PAGE_SIZE) != (addr >> LOG2_PAGE_SIZE))
+                break;
+
+            // low-confidence step - advance the walk without prefetching
+            if (p.conf >= SIG_CONF_THRESHOLD)
+                prefetch_line(ip, addr, pf_address, fill_level, 0);
+            sig = next_signature(sig, p.stride);
+        }
+    }
 }
 
 void CACHE::l1d_prefetcher_cache_fill(uint64_t v_addr, uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t v_evicted_addr, uint64_t evicted_addr, uint32_t metadata_in)
 {
-	return; //metadata_in;
+    if (!prefetch)
+        return;
+
+    // stats are reset at the end of warmup
+    if (pf_fill < epoch_fill_base || pf_useful < epoch_useful_base) {
+        epoch_fill_base = 0;
+        epoch_useful_base = 0;
+    }
+
+    uint64_t fills = pf_fill - epoch_fill_base;
+    if (fills < EPOCH_FILLS)  //consider only when fill = EPOCH_FILLS as an epoch
+        return;
+
+    // accuracy over the last epoch 
+    double accuracy = (double)(pf_useful - epoch_useful_base) / fills;
+
+    // scaling up the prefetch degree if the acc is more than the high threshold up to MAX_DEGREE
+    // or scaling down if the acc is less than the low threshold 
+    if (accuracy > ACC_HIGH && cur_degree < MAX_DEGREE)
+        cur_degree++;
+    else if (accuracy < ACC_LOW && cur_degree > MIN_DEGREE)
+        cur_degree--;
+
+    epoch_fill_base = pf_fill;
+    epoch_useful_base = pf_useful;
 }
 
 void CACHE::l1d_prefetcher_final_stats()
 {
-
+    std::cout << "CPU " << cpu << " L1D SPP final stats" << std::endl;
+    std::cout << "Final degree: " << cur_degree << std::endl;
 }
