@@ -1,0 +1,10 @@
+# trace files (not part of the submission)
+Trace*
+*.champsimtrace.gz
+*.champsimtrace.xz
+
+# build outputs
+bin/
+obj/
+
+__pycache__/
