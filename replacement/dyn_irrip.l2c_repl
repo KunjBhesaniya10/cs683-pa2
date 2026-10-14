@@ -10,6 +10,13 @@
             - events is 1 for a hit and 2 for a miss (miss is counted in both access and miss)
         - the counter saturates at 0 and 2^PSEL_BITS - 1
         - upper half of the counter uses I-RRIP for the follower sets, lower half uses RRIP
+
+  prefetch awareness (lines requested by the L1D prefetcher arrive at L2 with type PREFETCH)
+    - a prefetch fill is inserted at maxRRPV so that an unused prefetch is evicted first
+    - a prefetch hit (prefetch requested is already present in L2) does not change the RRPV, since it is not the reuse by the program
+    - a demand hit on a prefetched line is promoted like any other line of the current mode
+    - prefetch fills and hits are not sampled by the leader sets, so the policy selector reflects
+      only the program's demand for instruction and data lines
 */
 
 
@@ -21,6 +28,8 @@
 #define INSTR_INSERT_RRPV 1
 #define DATA_INSERT_RRPV (maxRRPV - 1)
 #define INSTR_HIT_RRPV 0
+
+#define PREFETCH_INSERT_RRPV maxRRPV
 
 #ifndef LEADER_SETS
 #define LEADER_SETS 32
@@ -138,8 +147,15 @@ void CACHE::l2c_update_replacement_state(uint32_t cpu, uint32_t set, uint32_t wa
     if ((type == WRITEBACK) && ip)
         assert(0);
 
-    if (is_leader(set) && type != WRITEBACK)
+    if (is_leader(set) && type != WRITEBACK && type != PREFETCH)
         sample_leader(cpu, hit, isInstruction);
+
+    // prefetch fills are inserted at a distant RRPV and prefetch hits are not promoted
+    if (type == PREFETCH) {
+        if (!hit)
+            l2_rrpv[set][way] = PREFETCH_INSERT_RRPV;
+        return;
+    }
 
     if (irrip_set(set)) {
         // data hits are not promoted
