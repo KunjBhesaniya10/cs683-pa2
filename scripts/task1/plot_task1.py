@@ -77,14 +77,14 @@ def main():
 
     prefetchers = CONFIGS[1:]
     bar_plot("speedup", "Speedup", "Speedup of L1D prefetchers over baseline (no prefetching)",
-             [(lbl, col, [data[(t, c)]["speedup"] for t in TRACES]) for c, lbl, col in prefetchers], "{:.3f}",
+             [(lbl, col, [data[(t, c)]["speedup"] for t in TRACES]) for c, lbl, col in prefetchers], "{:.4f}",
              ylim=(0.99, 1.03), baseline_line=True)
     bar_plot("l1d_mpki", "L1D load MPKI", "L1D load MPKI",
              [(lbl, col, [data[(t, c)]["mpki"] for t in TRACES]) for c, lbl, col in CONFIGS], "{:.2f}")
     bar_plot("accuracy", "L1D prefetch accuracy (%)", "L1D prefetch accuracy",
-             [(lbl, col, [data[(t, c)]["accuracy"] for t in TRACES]) for c, lbl, col in prefetchers], "{:.1f}")
+             [(lbl, col, [data[(t, c)]["accuracy"] for t in TRACES]) for c, lbl, col in prefetchers], "{:.2f}")
     bar_plot("coverage", "L1D prefetch coverage (%)", "L1D prefetch coverage",
-             [(lbl, col, [data[(t, c)]["coverage"] for t in TRACES]) for c, lbl, col in prefetchers], "{:.1f}")
+             [(lbl, col, [data[(t, c)]["coverage"] for t in TRACES]) for c, lbl, col in prefetchers], "{:.2f}")
 
 
 if __name__ == "__main__":

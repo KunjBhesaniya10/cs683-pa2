@@ -13,7 +13,7 @@ for bits in 7 8 9 10; do
     name=sig$bits
 
     rm -f obj/prefetcher/l1d_prefetcher.o
-    EXTRA_FLAGS="-DSIG_BITS=$bits" ./build_champsim.sh spp lru $name
+    EXTRA_FLAGS="-DACC_LOW=0.40 -DACC_HIGH=0.50 -DMAX_DEGREE=4 -DSIG_BITS=$bits" ./build_champsim.sh spp lru $name
 
     for t in trace1 trace2 trace3; do
         bin/hashed_perceptron-no-spp-no-no-no-no-no-lru-lru-lru-lru-lru-lru-lru-lru-1core-$name \

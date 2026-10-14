@@ -13,7 +13,7 @@ cp -r Makefile branch inc prefetcher replacement src "$BUILD"/
 tr -d '\r' < build_champsim.sh > "$BUILD/build_champsim.sh"
 mkdir -p bin $OUT
 
-for leaders in 16 32 64; do
+for leaders in 32 64; do
     name=dyn_ls$leaders
     flags="-DLEADER_SETS=$leaders"
     echo "building $name ($flags)"

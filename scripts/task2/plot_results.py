@@ -31,7 +31,7 @@ TITLES = {
 LABELS = {
     "lru": "LRU", "rrip": "RRIP", "irrip": "I-RRIP",
     "dyn_t0.30": "T=0.30", "dyn_t0.40": "T=0.40", "dyn_t0.45": "T=0.45", "dyn_t0.50": "T=0.50", "dyn_t0.60": "T=0.60", "dyn_t0.70": "T=0.70",
-    "dyn_ls16": "16 leader sets", "dyn_ls32": "32 leader sets", "dyn_ls64": "64 leader sets",
+    "dyn_ls32": "32 leader sets", "dyn_ls64": "64 leader sets",
     "dyn_psel6": "6-bit PSEL", "dyn_psel8": "8-bit PSEL", "dyn_psel10": "10-bit PSEL", "dyn_psel12": "12-bit PSEL",
 }
 COLORS = ["steelblue", "darkorange", "seagreen", "mediumpurple", "firebrick", "goldenrod"]
@@ -49,7 +49,7 @@ TABLES = [
      METRICS, A / "insertion_promotion" / "results.csv"),
     ([B / "threshold", A], ["lru", "dyn_t0.30", "dyn_t0.40", "dyn_t0.45", "dyn_t0.50", "dyn_t0.60", "dyn_t0.70"],
      DYN_COLUMNS, B / "threshold" / "results.csv"),
-    ([B / "leader_sets", A], ["lru", "dyn_ls16", "dyn_ls32", "dyn_ls64"], DYN_COLUMNS, B / "leader_sets" / "results.csv"),
+    ([B / "leader_sets", A], ["lru", "dyn_ls32", "dyn_ls64"], DYN_COLUMNS, B / "leader_sets" / "results.csv"),
     ([B / "psel_bits", A], ["lru", "dyn_psel6", "dyn_psel8", "dyn_psel10", "dyn_psel12"], DYN_COLUMNS,
      B / "psel_bits" / "results.csv"),
 ]

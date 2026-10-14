@@ -17,7 +17,7 @@ for low in 10 20 30 40 50; do
         name=low$(printf %03d $low)_high$(printf %03d $high)
 
         rm -f obj/prefetcher/l1d_prefetcher.o
-        EXTRA_FLAGS="-DACC_LOW=0.$(printf %02d $low) -DACC_HIGH=0.$(printf %02d $high)" \
+        EXTRA_FLAGS="-DMAX_DEGREE=4 -DACC_LOW=0.$(printf %02d $low) -DACC_HIGH=0.$(printf %02d $high)" \
             ./build_champsim.sh spp lru $name
 
         for t in trace1 trace2 trace3; do

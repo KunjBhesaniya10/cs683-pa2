@@ -18,8 +18,12 @@
 
 #include "cache.h"
 
-#define IP_TRACKER_COUNT 128            
+#ifndef IP_TRACKER_COUNT
+#define IP_TRACKER_COUNT 128
+#endif
+#ifndef MASK_IP
 #define MASK_IP 0x3FF                   // IP tag: low 10 bits of the IP
+#endif
 
 // stride are bounded -63 to 63 (7 bits), as a page only have 64 cache line, 
 // the useful strides for prefetching can't be greater than 64 so we keep only 7 bit stride
@@ -42,13 +46,13 @@
 #define PREFETCH_DEGREE 3               // initial degree
 #endif
 #ifndef MAX_DEGREE
-#define MAX_DEGREE 4
+#define MAX_DEGREE 6
 #endif
 #ifndef ACC_HIGH
-#define ACC_HIGH 0.60                   // accuracy above which the degree is increased
+#define ACC_HIGH 0.50                   // accuracy above which the degree is increased
 #endif
 #ifndef ACC_LOW
-#define ACC_LOW 0.30                    // accuracy below which the degree is decreased
+#define ACC_LOW 0.40                    // accuracy below which the degree is decreased
 #endif
 
 #define SIG_MASK ((1 << SIG_BITS) - 1)
